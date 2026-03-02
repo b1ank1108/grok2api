@@ -588,7 +588,6 @@ function toggleSelectAll() {
   const checked = checkbox.checked;
 
   // 只选择当前页的token
-  const totalPages = Math.ceil(displayTokens.length / itemsPerPage);
   const startIndex = (currentPage - 1) * itemsPerPage;
   const endIndex = Math.min(startIndex + itemsPerPage, displayTokens.length);
   const pageTokens = displayTokens.slice(startIndex, endIndex);
