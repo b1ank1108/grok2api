@@ -24,6 +24,10 @@ const filterState = {
   statusExhausted: false,
 };
 
+// 分页状态
+let currentPage = 1;
+const itemsPerPage = 50; // 每页显示50个token
+
 function normalizeSsoToken(token) {
   const v = String(token || '').trim();
   return v.startsWith('sso=') ? v.slice(4).trim() : v;
@@ -166,6 +170,9 @@ function applyFilters() {
       || (filterState.statusInvalid && status.invalid)
       || (filterState.statusExhausted && status.exhausted);
   });
+
+  // 重置到第一页
+  currentPage = 1;
 
   const resultEl = document.getElementById('filter-result-count');
   if (resultEl) {
@@ -422,18 +429,27 @@ function renderTable() {
   if (flatTokens.length === 0) {
     emptyState.innerText = '暂无 Token，请点击右上角导入或添加。';
     emptyState.classList.remove('hidden');
+    hidePagination();
     return;
   }
   if (displayTokens.length === 0) {
     emptyState.innerText = '当前筛选无结果。';
     emptyState.classList.remove('hidden');
     updateSelectionState();
+    hidePagination();
     return;
   }
   emptyState.innerText = '暂无 Token，请点击右上角导入或添加。';
   emptyState.classList.add('hidden');
 
-  displayTokens.forEach((item) => {
+  // 分页计算
+  const totalPages = Math.ceil(displayTokens.length / itemsPerPage);
+  const startIndex = (currentPage - 1) * itemsPerPage;
+  const endIndex = Math.min(startIndex + itemsPerPage, displayTokens.length);
+  const pageTokens = displayTokens.slice(startIndex, endIndex);
+
+  // 只渲染当前页的token
+  pageTokens.forEach((item) => {
     const tr = document.createElement('tr');
     const tokenKey = getTokenKey(item.token);
     const tokenEncoded = encodeURIComponent(item.token);
@@ -512,13 +528,72 @@ function renderTable() {
   });
 
   updateSelectionState();
+  updatePagination(totalPages);
+}
+
+// 分页控制函数
+function updatePagination(totalPages) {
+  let paginationEl = document.getElementById('token-pagination');
+
+  if (!paginationEl) {
+    // 创建分页元素
+    const tableContainer = document.querySelector('.rounded-lg.overflow-hidden.bg-white.mb-4.overflow-x-auto');
+    if (tableContainer) {
+      paginationEl = document.createElement('div');
+      paginationEl.id = 'token-pagination';
+      paginationEl.className = 'flex items-center justify-between px-4 py-3 border-t border-[var(--accents-1)]';
+      tableContainer.appendChild(paginationEl);
+    }
+  }
+
+  if (!paginationEl) return;
+
+  if (totalPages <= 1) {
+    paginationEl.style.display = 'none';
+    return;
+  }
+
+  paginationEl.style.display = 'flex';
+  paginationEl.innerHTML = `
+    <div class="text-xs text-[var(--accents-5)]">
+      显示 ${(currentPage - 1) * itemsPerPage + 1}-${Math.min(currentPage * itemsPerPage, displayTokens.length)} / 共 ${displayTokens.length} 个
+    </div>
+    <div class="flex items-center gap-2">
+      <button onclick="goToPage(1)" ${currentPage === 1 ? 'disabled' : ''} class="geist-button-outline text-xs px-2 py-1" ${currentPage === 1 ? 'style="opacity:0.5;cursor:not-allowed"' : ''}>首页</button>
+      <button onclick="goToPage(${currentPage - 1})" ${currentPage === 1 ? 'disabled' : ''} class="geist-button-outline text-xs px-2 py-1" ${currentPage === 1 ? 'style="opacity:0.5;cursor:not-allowed"' : ''}>上一页</button>
+      <span class="text-xs text-[var(--accents-6)]">${currentPage} / ${totalPages}</span>
+      <button onclick="goToPage(${currentPage + 1})" ${currentPage === totalPages ? 'disabled' : ''} class="geist-button-outline text-xs px-2 py-1" ${currentPage === totalPages ? 'style="opacity:0.5;cursor:not-allowed"' : ''}>下一页</button>
+      <button onclick="goToPage(${totalPages})" ${currentPage === totalPages ? 'disabled' : ''} class="geist-button-outline text-xs px-2 py-1" ${currentPage === totalPages ? 'style="opacity:0.5;cursor:not-allowed"' : ''}>末页</button>
+    </div>
+  `;
+}
+
+function hidePagination() {
+  const paginationEl = document.getElementById('token-pagination');
+  if (paginationEl) {
+    paginationEl.style.display = 'none';
+  }
+}
+
+function goToPage(page) {
+  const totalPages = Math.ceil(displayTokens.length / itemsPerPage);
+  if (page < 1 || page > totalPages) return;
+  currentPage = page;
+  renderTable();
 }
 
 // Selection Logic
 function toggleSelectAll() {
   const checkbox = document.getElementById('select-all');
   const checked = checkbox.checked;
-  const visibleKeys = new Set(displayTokens.map((t) => getTokenKey(t.token)));
+
+  // 只选择当前页的token
+  const totalPages = Math.ceil(displayTokens.length / itemsPerPage);
+  const startIndex = (currentPage - 1) * itemsPerPage;
+  const endIndex = Math.min(startIndex + itemsPerPage, displayTokens.length);
+  const pageTokens = displayTokens.slice(startIndex, endIndex);
+  const visibleKeys = new Set(pageTokens.map((t) => getTokenKey(t.token)));
+
   flatTokens.forEach((t) => {
     if (visibleKeys.has(getTokenKey(t.token))) {
       t._selected = checked;
