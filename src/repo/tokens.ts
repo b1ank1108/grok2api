@@ -89,11 +89,17 @@ export function tokenRowToInfo(row: TokenRow): {
   };
 }
 
-export async function listTokens(db: Env["DB"]): Promise<TokenRow[]> {
-  return dbAll<TokenRow>(
-    db,
-    "SELECT token, token_type, created_time, remaining_queries, heavy_remaining_queries, status, tags, note, cooldown_until, last_failure_time, last_failure_reason, failed_count FROM tokens ORDER BY created_time DESC",
-  );
+export async function listTokens(db: Env["DB"], limit?: number, offset?: number): Promise<TokenRow[]> {
+  let sql = "SELECT token, token_type, created_time, remaining_queries, heavy_remaining_queries, status, tags, note, cooldown_until, last_failure_time, last_failure_reason, failed_count FROM tokens ORDER BY created_time DESC";
+
+  if (limit !== undefined) {
+    sql += ` LIMIT ${limit}`;
+    if (offset !== undefined) {
+      sql += ` OFFSET ${offset}`;
+    }
+  }
+
+  return dbAll<TokenRow>(db, sql);
 }
 
 export async function addTokens(db: Env["DB"], tokens: string[], token_type: TokenType): Promise<number> {
@@ -115,14 +121,27 @@ export async function addTokens(db: Env["DB"], tokens: string[], token_type: Tok
 export async function deleteTokens(db: Env["DB"], tokens: string[], token_type: TokenType): Promise<number> {
   const cleaned = tokens.map((t) => t.trim()).filter(Boolean);
   if (!cleaned.length) return 0;
-  const placeholders = cleaned.map(() => "?").join(",");
-  const before = await dbFirst<{ c: number }>(
-    db,
-    `SELECT COUNT(1) as c FROM tokens WHERE token_type = ? AND token IN (${placeholders})`,
-    [token_type, ...cleaned],
-  );
-  await dbRun(db, `DELETE FROM tokens WHERE token_type = ? AND token IN (${placeholders})`, [token_type, ...cleaned]);
-  return before?.c ?? 0;
+
+  // 分批删除，避免SQL过长导致超时
+  const BATCH_SIZE = 100;
+  let totalDeleted = 0;
+
+  for (let i = 0; i < cleaned.length; i += BATCH_SIZE) {
+    const batch = cleaned.slice(i, i + BATCH_SIZE);
+    const placeholders = batch.map(() => "?").join(",");
+
+    const before = await dbFirst<{ c: number }>(
+      db,
+      `SELECT COUNT(1) as c FROM tokens WHERE token_type = ? AND token IN (${placeholders})`,
+      [token_type, ...batch],
+    );
+
+    await dbRun(db, `DELETE FROM tokens WHERE token_type = ? AND token IN (${placeholders})`, [token_type, ...batch]);
+
+    totalDeleted += before?.c ?? 0;
+  }
+
+  return totalDeleted;
 }
 
 export async function updateTokenTags(db: Env["DB"], token: string, token_type: TokenType, tags: string[]): Promise<void> {

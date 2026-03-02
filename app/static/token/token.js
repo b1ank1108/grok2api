@@ -138,6 +138,20 @@ function applyFilters() {
   const hasTypeFilter = filterState.typeSso || filterState.typeSuperSso;
   const hasStatusFilter = filterState.statusActive || filterState.statusInvalid || filterState.statusExhausted;
 
+  // 缓存状态计算结果，避免重复计算
+  const statusCache = new Map();
+  const getStatus = (item) => {
+    const key = `${item.token}_${item.status}_${item.quota}_${item.heavy_quota}`;
+    if (!statusCache.has(key)) {
+      statusCache.set(key, {
+        active: isTokenActive(item),
+        invalid: isTokenInvalid(item),
+        exhausted: isTokenExhausted(item)
+      });
+    }
+    return statusCache.get(key);
+  };
+
   displayTokens = flatTokens.filter((item) => {
     const tokenType = String(item.token_type || poolToType(item.pool));
     const matchesType = !hasTypeFilter
@@ -147,12 +161,10 @@ function applyFilters() {
     if (!matchesType) return false;
     if (!hasStatusFilter) return true;
 
-    const active = isTokenActive(item);
-    const invalid = isTokenInvalid(item);
-    const exhausted = isTokenExhausted(item);
-    return (filterState.statusActive && active)
-      || (filterState.statusInvalid && invalid)
-      || (filterState.statusExhausted && exhausted);
+    const status = getStatus(item);
+    return (filterState.statusActive && status.active)
+      || (filterState.statusInvalid && status.invalid)
+      || (filterState.statusExhausted && status.exhausted);
   });
 
   const resultEl = document.getElementById('filter-result-count');
@@ -161,9 +173,14 @@ function applyFilters() {
   }
 }
 
+// 防抖优化：避免频繁触发筛选
+let filterDebounceTimer = null;
 function onFilterChange() {
-  applyFilters();
-  renderTable();
+  if (filterDebounceTimer) clearTimeout(filterDebounceTimer);
+  filterDebounceTimer = setTimeout(() => {
+    applyFilters();
+    renderTable();
+  }, 150);
 }
 
 function resetFilters() {
@@ -986,7 +1003,10 @@ function batchDelete() {
 // Reconstruct object structure and save
 async function syncToServer() {
   const newTokens = {};
-  flatTokens.forEach(t => {
+
+  // 使用for循环代替forEach，性能更好
+  for (let i = 0; i < flatTokens.length; i++) {
+    const t = flatTokens[i];
     if (!newTokens[t.pool]) newTokens[t.pool] = [];
     newTokens[t.pool].push({
       token: normalizeSsoToken(t.token),
@@ -997,7 +1017,7 @@ async function syncToServer() {
       fail_count: t.fail_count,
       use_count: t.use_count || 0
     });
-  });
+  }
 
   try {
     const res = await fetch('/api/v1/admin/tokens', {
@@ -1355,16 +1375,19 @@ async function startBatchDelete() {
   const ok = await confirmAction(`确定要删除选中的 ${selected.length} 个 Token 吗？`, { okText: '删除' });
   if (!ok) return;
 
-  isBatchProcessing = true;
-  isBatchPaused = false;
-  currentBatchAction = 'delete';
-  batchQueue = selected.map(t => normalizeSsoToken(t.token));
-  batchTotal = batchQueue.length;
-  batchProcessed = 0;
+  // 直接批量删除，不再逐个处理
+  const toRemove = new Set(selected.map(t => normalizeSsoToken(t.token)));
+  flatTokens = flatTokens.filter(t => !toRemove.has(normalizeSsoToken(t.token)));
+  applyFilters();
 
-  updateBatchProgress();
-  setActionButtonsState();
-  processDeleteQueue();
+  try {
+    await syncToServer();
+    showToast(`成功删除 ${selected.length} 个 Token`, 'success');
+    loadData();
+  } catch (e) {
+    showToast('删除失败: ' + (e.message || '未知错误'), 'error');
+    loadData(); // 重新加载以恢复状态
+  }
 }
 
 let confirmResolver = null;

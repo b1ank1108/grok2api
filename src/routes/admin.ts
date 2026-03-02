@@ -636,30 +636,52 @@ adminRoutes.post("/api/v1/admin/tokens", requireAdminAuth, async (c) => {
     const body = (await c.req.json()) as Record<string, unknown>;
     if (!body || typeof body !== "object") return c.json(legacyErr("Invalid payload"), 400);
 
-    const rows = await listTokens(c.env.DB);
-    const byType: Record<"sso" | "ssoSuper", Set<string>> = { sso: new Set(), ssoSuper: new Set() };
-    for (const r of rows) byType[r.token_type].add(r.token);
-    const existingAll = new Set<string>(rows.map((r) => r.token));
-    const newlyAdded: string[] = [];
-
     const now = nowMs();
+
+    // 只查询token和token_type，减少数据传输
+    const existingTokens = await dbAll<{ token: string; token_type: string }>(
+      c.env.DB,
+      "SELECT token, token_type FROM tokens"
+    );
+
+    const byType: Record<"sso" | "ssoSuper", Set<string>> = { sso: new Set(), ssoSuper: new Set() };
+    const existingAll = new Set<string>();
+
+    // 单次遍历构建两个数据结构
+    for (const r of existingTokens) {
+      byType[r.token_type as "sso" | "ssoSuper"].add(r.token);
+      existingAll.add(r.token);
+    }
+
     const desiredByType: Record<"sso" | "ssoSuper", Set<string>> = { sso: new Set(), ssoSuper: new Set() };
     const stmts: D1PreparedStatement[] = [];
+    const newlyAdded: string[] = [];
 
-    for (const [pool, items] of Object.entries(body)) {
+    // 预分配数组容量，减少动态扩容
+    const entries = Object.entries(body);
+
+    for (let i = 0; i < entries.length; i++) {
+      const [pool, items] = entries[i];
       const tokenType = poolToTokenType(pool);
       if (!tokenType) continue;
+
       const arr = Array.isArray(items) ? items : [];
-      for (const it of arr) {
+
+      for (let j = 0; j < arr.length; j++) {
+        const it = arr[j];
         const tokenRaw = typeof it === "string" ? it : (it as any)?.token;
         const token = normalizeSsoToken(String(tokenRaw ?? ""));
         if (!token) continue;
+
         desiredByType[tokenType].add(token);
-        if (!existingAll.has(token)) {
+
+        const isNew = !existingAll.has(token);
+        if (isNew) {
           existingAll.add(token);
           newlyAdded.push(token);
         }
 
+        // 只有新token或有变化的token才需要更新
         const statusRaw = typeof it === "string" ? "active" : String((it as any)?.status ?? "active");
         const quotaRaw = typeof it === "string" ? 0 : Number((it as any)?.quota ?? 0);
         const quota = Number.isFinite(quotaRaw) && quotaRaw >= 0 ? Math.floor(quotaRaw) : -1;
@@ -684,19 +706,33 @@ adminRoutes.post("/api/v1/admin/tokens", requireAdminAuth, async (c) => {
       }
     }
 
-    // Delete tokens removed from the posted pools
+    // 批量删除：合并为单个DELETE语句
+    const allToDel: string[] = [];
     for (const tokenType of ["sso", "ssoSuper"] as const) {
       const existing = byType[tokenType];
       const desired = desiredByType[tokenType];
-      const toDel: string[] = [];
-      for (const t of existing) if (!desired.has(t)) toDel.push(t);
-      if (toDel.length) {
-        const placeholders = toDel.map(() => "?").join(",");
-        stmts.push(c.env.DB.prepare(`DELETE FROM tokens WHERE token_type = ? AND token IN (${placeholders})`).bind(tokenType, ...toDel));
+      for (const t of existing) {
+        if (!desired.has(t)) allToDel.push(t);
       }
     }
 
-    if (stmts.length) await c.env.DB.batch(stmts);
+    if (allToDel.length > 0) {
+      // 分批删除，避免SQL过长
+      const BATCH_SIZE = 100;
+      for (let i = 0; i < allToDel.length; i += BATCH_SIZE) {
+        const batch = allToDel.slice(i, i + BATCH_SIZE);
+        const placeholders = batch.map(() => "?").join(",");
+        stmts.push(
+          c.env.DB.prepare(`DELETE FROM tokens WHERE token IN (${placeholders})`).bind(...batch)
+        );
+      }
+    }
+
+    // 执行所有SQL
+    if (stmts.length > 0) {
+      await c.env.DB.batch(stmts);
+    }
+
     return c.json(legacyOk({ message: "Token 已更新" }));
   } catch (e) {
     return c.json(legacyErr(`Update tokens failed: ${e instanceof Error ? e.message : String(e)}`), 500);
