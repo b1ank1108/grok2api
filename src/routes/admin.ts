@@ -661,7 +661,9 @@ adminRoutes.post("/api/v1/admin/tokens", requireAdminAuth, async (c) => {
     const entries = Object.entries(body);
 
     for (let i = 0; i < entries.length; i++) {
-      const [pool, items] = entries[i];
+      const entry = entries[i];
+      if (!entry) continue;
+      const [pool, items] = entry;
       const tokenType = poolToTokenType(pool);
       if (!tokenType) continue;
 
